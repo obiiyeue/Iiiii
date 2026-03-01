@@ -359,7 +359,8 @@ local function NextTarget(exclude)
     if #all==0 then return nil end
     local filtered={}
     for _,p in ipairs(all) do if p~=exclude then table.insert(filtered,p) end end
-    if #filtered==0 then return all[1] end
+    -- Nếu không còn ai khác ngoài exclude -> hết server, trả nil để trigger hop
+    if #filtered==0 then return nil end
     return filtered[math.random(1,#filtered)]
 end
 
@@ -377,27 +378,46 @@ local function Webhook(name,bounty)
 end
 
 -- ==================== SERVER HOP ====================
+local IsHopping = false  -- tránh gọi nhiều lần cùng lúc
+
 local function HopServer()
-    if tick()-S.LastHop<5 then return end
-    S.LastHop=tick()
+    if IsHopping then return end
+    IsHopping = true
     task.spawn(function()
+        -- Thông báo UI
+        if SafeLine then SafeLine.Text = "🔄 Đang tìm server mới..." end
+
         local ok,result=pcall(function()
             return HttpService:JSONDecode(game:HttpGet(
                 "https://games.roblox.com/v1/games/"..game.PlaceId.."/servers/Public?sortOrder=Asc&limit=100"
             ))
         end)
-        if not ok or not result or not result.data then return end
+
+        if not ok or not result or not result.data then
+            task.wait(2); IsHopping=false; return
+        end
+
         local servers={}
         for _,sv in ipairs(result.data) do
             if sv.id~=S.JobId and not S.Visited[sv.id] and sv.playing and sv.playing>0 then
                 table.insert(servers,sv)
             end
         end
-        if #servers==0 then S.Visited={}; return end
+
+        -- Hết server chưa visit -> reset danh sách và thử lại
+        if #servers==0 then
+            S.Visited={}
+            task.wait(1); IsHopping=false
+            HopServer()  -- gọi lại ngay
+            return
+        end
+
         local chosen=servers[math.random(1,#servers)]
         S.Visited[chosen.id]=true
         task.wait(CFG["Hop Server"]["Delay Hop"] or 1)
         pcall(function() TS:TeleportToPlaceInstance(game.PlaceId,chosen.id,LP) end)
+        -- Nếu teleport fail thì unlock
+        task.wait(5); IsHopping=false
     end)
 end
 
@@ -416,8 +436,11 @@ task.spawn(function()
     while S.Running do
         task.wait(0.15)
         if S.InSafeZone then continue end
+
         if not IsAlive(S.Target) then
             local killed=S.Target; S.Target=nil
+
+            -- Chỉ đếm kill nếu killed là người thật (không phải nil từ đầu)
             if killed then
                 S.KillCount=S.KillCount+1
                 local bounty=0
@@ -427,19 +450,28 @@ task.spawn(function()
                 end)
                 Webhook(killed.Name,bounty)
             end
+
+            -- Tìm target mới, loại bỏ người vừa kill
             S.Target=NextTarget(killed)
             S.TargetTimer=tick()
             StopSkills(); SkillThreads={}
         end
+
+        -- Timeout 2 phút
         if S.Target and (tick()-S.TargetTimer)>=S.ChaseTimeout then
             local old=S.Target
             S.Target=NextTarget(old)
             S.TargetTimer=tick()
             StopSkills(); SkillThreads={}
         end
+
+        -- Hết sạch target -> spam hop server ngay
         if not S.Target then
-            if CFG["Hop Server"]["Enable"] then HopServer() end
-            task.wait(2)
+            if CFG["Hop Server"]["Enable"] then
+                HopServer()
+            end
+            -- Không wait lâu, kiểm tra lại luôn
+            task.wait(0.5)
         end
     end
 end)
