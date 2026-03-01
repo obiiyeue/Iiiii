@@ -341,20 +341,30 @@ end
 StartSkillLoop()
 
 -- ══════════════════════════════════════════════
--- ANTI-FALL: Heartbeat giữ vị trí khi đang attack
--- Đây là fix cốt lõi cho việc bị rớt xuống biển
+-- ANTI-FALL: Heartbeat set CFrame cứng MỖI FRAME khi đang attack
+-- Set LIÊN TỤC không chờ lệch — skill animation không kịp đẩy xuống
 -- ══════════════════════════════════════════════
-local lockPosition = nil  -- Vector3 hoặc nil
+local lockPosition = nil
+local lockYaw      = 0
 
 RunService.Heartbeat:Connect(function()
     if not lockPosition then return end
     if not HRP then return end
     if not ST.Arrived then lockPosition = nil; return end
 
-    -- Nếu lệch quá 3 studs → kéo về ngay
-    if (HRP.Position - lockPosition).Magnitude > 3 then
-        HRP.CFrame = CFrame.new(lockPosition)
+    -- Cập nhật vị trí + góc nhìn theo target mỗi frame
+    if ST.Target and ST.Target.Character then
+        local tRoot = ST.Target.Character:FindFirstChild("HumanoidRootPart")
+        if tRoot then
+            lockPosition = tRoot.Position + Vector3.new(0, 3, 0)
+            local dx = tRoot.Position.X - HRP.Position.X
+            local dz = tRoot.Position.Z - HRP.Position.Z
+            lockYaw = math.atan2(-dz, dx) - math.pi / 2
+        end
     end
+
+    -- Cứng vị trí mỗi frame — không cho skill đẩy xuống biển
+    HRP.CFrame = CFrame.new(lockPosition) * CFrame.Angles(0, lockYaw, 0)
 end)
 
 -- ══════════════════════════════════════════════
@@ -410,8 +420,9 @@ local function FlyToTarget()
             bg.CFrame = CFrame.new(myPos, Vector3.new(tPos.X, myPos.Y, tPos.Z))
 
             if dist <= CFG.AttackDist then
-                -- SÁT TARGET: dừng bay, khoá vị trí bằng Heartbeat
+                -- SÁT TARGET: tắt BodyVelocity, bật CFrame lock
                 bv.Velocity  = Vector3.zero
+                bv.MaxForce  = Vector3.new(0, 0, 0)  -- tắt hẳn để không conflict CFrame
                 lockPosition = tRoot.Position + Vector3.new(0, 3, 0)
 
                 if not ST.Arrived then
@@ -425,7 +436,8 @@ local function FlyToTarget()
                 task.spawn(function() FireAttack(GetAttackTargets()) end)
 
             elseif dist <= CFG.AttackDist + 10 then
-                -- VÙNG ĐỆM: tiến chậm
+                -- VÙNG ĐỆM: tiến chậm, vẫn giữ Y
+                bv.MaxForce  = Vector3.new(1e9, 1e9, 1e9)
                 lockPosition = nil
                 local dir   = (tPos - myPos).Unit
                 bv.Velocity = dir * 80
@@ -436,7 +448,8 @@ local function FlyToTarget()
                 task.spawn(function() FireAttack(GetAttackTargets()) end)
 
             else
-                -- XA: bay nhanh
+                -- XA: bay nhanh, bật lại MaxForce
+                bv.MaxForce  = Vector3.new(1e9, 1e9, 1e9)
                 lockPosition = nil
                 ST.Arrived   = false
                 local dir    = (tPos - myPos).Unit
